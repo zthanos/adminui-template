@@ -1,11 +1,16 @@
 /**
  * OAuth 2.0 Authentication Service with PKCE
+ * 
+ * @deprecated This service is deprecated. Please use oidcService.ts instead for OIDC-compliant authentication.
+ * This file is maintained for backward compatibility only.
  */
 
 import type { TokenResponse, UserProfile, OAuthConfig } from '@/shared/types/auth.types'
 
 /**
  * Generate PKCE code verifier and challenge
+ * 
+ * @deprecated Use generatePKCEChallenge() from oidcService.ts instead
  */
 export async function generatePKCEChallenge(): Promise<{ verifier: string; challenge: string }> {
   // Generate random code verifier (43-128 characters)
@@ -20,6 +25,8 @@ export async function generatePKCEChallenge(): Promise<{ verifier: string; chall
 
 /**
  * Exchange authorization code for tokens
+ * 
+ * @deprecated Use exchangeCodeForTokens() from oidcService.ts instead for OIDC-compliant token exchange
  */
 export async function exchangeCodeForTokens(
   code: string,
@@ -53,6 +60,8 @@ export async function exchangeCodeForTokens(
 
 /**
  * Get user profile from ID token or userinfo endpoint
+ * 
+ * @deprecated Use getUserProfile() from oidcService.ts instead for provider-agnostic profile retrieval
  */
 export async function getUserProfile(accessToken: string): Promise<UserProfile> {
   // Call Microsoft Graph API to get user profile
@@ -81,6 +90,8 @@ export async function getUserProfile(accessToken: string): Promise<UserProfile> 
 
 /**
  * Revoke access tokens
+ * 
+ * @deprecated Use revokeTokens() from oidcService.ts instead for standard OIDC token revocation
  */
 export async function revokeTokens(_accessToken: string): Promise<void> {
   // Entra ID doesn't have a standard revocation endpoint
@@ -91,6 +102,8 @@ export async function revokeTokens(_accessToken: string): Promise<void> {
 
 /**
  * Update user profile
+ * 
+ * @deprecated Profile updates should now be handled through backend API endpoints. Direct Microsoft Graph API calls are no longer recommended.
  */
 export async function updateProfile(
   accessToken: string,
@@ -120,6 +133,8 @@ export async function updateProfile(
 
 /**
  * Get OAuth configuration from environment variables
+ * 
+ * @deprecated Use getOIDCConfig() from oidcService.ts instead for OIDC-compliant configuration with backward compatibility
  */
 export function getOAuthConfig(): OAuthConfig {
   return {
