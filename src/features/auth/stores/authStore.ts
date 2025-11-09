@@ -4,15 +4,18 @@
 
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { UserProfile } from '@/shared/types/auth.types'
+import type { UserProfile, IDTokenPayload } from '@/shared/types/auth.types'
 import {
   generatePKCEChallenge,
   exchangeCodeForTokens,
   getUserProfile,
   revokeTokens,
-  getOAuthConfig,
-  updateProfile,
-} from '../services/authService'
+  getOIDCConfig,
+  decodeIDToken,
+  validateIDToken,
+  refreshAccessToken,
+  endSession,
+} from '../services/oidcService'
 
 export const useAuthStore = defineStore('auth', () => {
   // State
@@ -21,6 +24,8 @@ export const useAuthStore = defineStore('auth', () => {
   const accessToken = ref<string | null>(null)
   const idToken = ref<string | null>(null)
   const tokenExpiry = ref<number | null>(null)
+  const refreshToken = ref<string | null>(null)
+  const idTokenPayload = ref<IDTokenPayload | null>(null)
 
   // Getters
   const userRoles = computed(() => user.value?.roles || [])
@@ -49,21 +54,27 @@ export const useAuthStore = defineStore('auth', () => {
   // Actions
 
   /**
-   * Initiate OAuth login flow with PKCE
+   * Initiate OIDC login flow with PKCE
    */
   async function initiateLogin(): Promise<void> {
-    const config = getOAuthConfig()
+    const config = getOIDCConfig()
     const { verifier, challenge } = await generatePKCEChallenge()
 
     // Store verifier in sessionStorage for callback
     sessionStorage.setItem('pkce_verifier', verifier)
+
+    // Ensure openid scope is included
+    const scopes = config.scope.split(' ')
+    if (!scopes.includes('openid')) {
+      scopes.unshift('openid')
+    }
 
     // Build authorization URL
     const params = new URLSearchParams({
       client_id: config.clientId,
       response_type: 'code',
       redirect_uri: config.redirectUri,
-      scope: config.scope,
+      scope: scopes.join(' '),
       code_challenge: challenge,
       code_challenge_method: 'S256',
       state: generateState(),
@@ -71,12 +82,12 @@ export const useAuthStore = defineStore('auth', () => {
 
     const authUrl = `${config.authorizationEndpoint}?${params.toString()}`
     
-    // Redirect to OAuth provider
+    // Redirect to OIDC provider
     window.location.href = authUrl
   }
 
   /**
-   * Handle OAuth callback and exchange code for tokens
+   * Handle OIDC callback and exchange code for tokens
    */
   async function handleCallback(code: string): Promise<void> {
     const verifier = sessionStorage.getItem('pkce_verifier')
@@ -94,8 +105,21 @@ export const useAuthStore = defineStore('auth', () => {
       idToken.value = tokenResponse.id_token
       tokenExpiry.value = Date.now() + tokenResponse.expires_in * 1000
 
-      // Fetch user profile
-      const profile = await getUserProfile(tokenResponse.access_token)
+      // Store refresh token if present
+      if (tokenResponse.refresh_token) {
+        refreshToken.value = tokenResponse.refresh_token
+      }
+
+      // Decode and validate ID token
+      const config = getOIDCConfig()
+      const decodedIdToken = decodeIDToken(tokenResponse.id_token)
+      validateIDToken(decodedIdToken, config)
+      
+      // Store decoded ID token payload
+      idTokenPayload.value = decodedIdToken
+
+      // Fetch user profile from UserInfo endpoint or ID token
+      const profile = await getUserProfile(tokenResponse.access_token, decodedIdToken)
       user.value = profile
       isAuthenticated.value = true
 
@@ -115,9 +139,14 @@ export const useAuthStore = defineStore('auth', () => {
    * Logout user and revoke tokens
    */
   async function logout(): Promise<void> {
+    const currentIdToken = idToken.value
+    const currentAccessToken = accessToken.value
+    const currentRefreshToken = refreshToken.value
+
     try {
-      if (accessToken.value) {
-        await revokeTokens(accessToken.value)
+      // Revoke tokens if available
+      if (currentAccessToken) {
+        await revokeTokens(currentAccessToken, currentRefreshToken || undefined)
       }
     } catch (error) {
       console.error('Token revocation failed:', error)
@@ -128,45 +157,66 @@ export const useAuthStore = defineStore('auth', () => {
         delete (window as any).__tokenMonitoringInterval
       }
 
-      // Clear state
+      // Clear all local state
       isAuthenticated.value = false
       user.value = null
       accessToken.value = null
       idToken.value = null
       tokenExpiry.value = null
+      refreshToken.value = null
+      idTokenPayload.value = null
 
       // Clear session storage
       sessionStorage.removeItem('pkce_verifier')
 
-      // Redirect to post-logout URI
-      const config = getOAuthConfig()
-      window.location.href = config.postLogoutUri
+      // End session at identity provider if configured
+      if (currentIdToken) {
+        endSession(currentIdToken)
+      } else {
+        // Fallback to local logout only if no ID token
+        const config = getOIDCConfig()
+        window.location.href = config.postLogoutRedirectUri
+      }
     }
   }
 
   /**
-   * Refresh access token
+   * Refresh access token using refresh token
    */
-  async function refreshToken(): Promise<void> {
-    // Note: Entra ID OAuth 2.0 with PKCE typically doesn't support refresh tokens
-    // in the authorization code flow for SPAs. Token refresh would require
-    // a refresh_token from the token response.
-    
-    // If refresh token is not available, we need to re-authenticate
-    if (!tokenExpiry.value) {
-      throw new Error('No token expiry information available')
-    }
-
-    // Check if token is actually expired
-    const now = Date.now()
-    if (now < tokenExpiry.value) {
-      // Token is still valid
+  async function refreshTokenAction(): Promise<void> {
+    // If no refresh token available, logout and re-authenticate
+    if (!refreshToken.value) {
+      console.warn('No refresh token available, logging out user')
+      await logout()
       return
     }
 
-    // Token is expired - trigger logout and re-authentication
-    console.warn('Token expired, logging out user')
-    await logout()
+    try {
+      // Use OIDC service to refresh tokens
+      const tokenResponse = await refreshAccessToken(refreshToken.value)
+      
+      // Update stored tokens with refreshed values
+      accessToken.value = tokenResponse.access_token
+      idToken.value = tokenResponse.id_token
+      tokenExpiry.value = Date.now() + tokenResponse.expires_in * 1000
+
+      // Update refresh token if a new one was provided
+      if (tokenResponse.refresh_token) {
+        refreshToken.value = tokenResponse.refresh_token
+      }
+
+      // Decode and store new ID token payload
+      const decodedIdToken = decodeIDToken(tokenResponse.id_token)
+      idTokenPayload.value = decodedIdToken
+
+      // Update user profile from new token
+      const profile = await getUserProfile(tokenResponse.access_token, decodedIdToken)
+      user.value = profile
+    } catch (error) {
+      // Clear session and logout if refresh fails
+      console.error('Token refresh failed, logging out user:', error)
+      await logout()
+    }
   }
 
   /**
@@ -190,7 +240,7 @@ export const useAuthStore = defineStore('auth', () => {
     const intervalId = setInterval(async () => {
       if (isAuthenticated.value && isTokenExpired()) {
         try {
-          await refreshToken()
+          await refreshTokenAction()
         } catch (error) {
           console.error('Token refresh failed:', error)
           clearInterval(intervalId)
@@ -205,7 +255,8 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   /**
-   * Update user profile
+   * Update user profile via backend API
+   * Backend handles provider-specific profile update logic
    */
   async function updateUserProfile(updates: { displayName?: string }): Promise<void> {
     if (!accessToken.value) {
@@ -213,7 +264,29 @@ export const useAuthStore = defineStore('auth', () => {
     }
 
     try {
-      const updatedProfile = await updateProfile(accessToken.value, updates)
+      // Call backend API endpoint for profile updates
+      const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || ''
+      const response = await fetch(`${apiBaseUrl}/api/user/profile`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken.value}`,
+        },
+        body: JSON.stringify(updates),
+      })
+
+      if (!response.ok) {
+        // Check if profile updates are not supported
+        if (response.status === 501 || response.status === 404) {
+          throw new Error(
+            'Profile updates are not supported by your identity provider. ' +
+            'Please update your profile directly in your identity provider portal.'
+          )
+        }
+        throw new Error(`Profile update failed: ${response.statusText}`)
+      }
+
+      const updatedProfile = await response.json()
       user.value = updatedProfile
     } catch (error) {
       throw error
@@ -227,6 +300,8 @@ export const useAuthStore = defineStore('auth', () => {
     accessToken,
     idToken,
     tokenExpiry,
+    refreshToken,
+    idTokenPayload,
     
     // Getters
     userRoles,
@@ -238,7 +313,7 @@ export const useAuthStore = defineStore('auth', () => {
     initiateLogin,
     handleCallback,
     logout,
-    refreshToken,
+    refreshToken: refreshTokenAction,
     updateUserProfile,
     isTokenExpired,
     startTokenMonitoring,
