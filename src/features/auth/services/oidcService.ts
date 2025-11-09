@@ -144,9 +144,10 @@ export function validateIDToken(payload: IDTokenPayload, config: OIDCConfig): vo
     throw new Error('ID token has expired')
   }
 
-  // Verify issued at time is not in the future
+  // Verify issued at time is not in the future (with 5-minute clock skew tolerance)
   const now = Math.floor(Date.now() / 1000)
-  if (payload.iat && payload.iat > now + 60) {
+  const CLOCK_SKEW_TOLERANCE = 5 * 60 // 5 minutes
+  if (payload.iat && payload.iat > now + CLOCK_SKEW_TOLERANCE) {
     throw new Error('ID token issued in the future')
   }
 }
