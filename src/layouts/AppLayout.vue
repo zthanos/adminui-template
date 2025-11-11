@@ -2,17 +2,22 @@
   <div class="min-h-screen bg-base-200">
     <Sidebar>
       <!-- Main content area -->
-      <div class="flex flex-col min-h-screen">
-        <!-- Navbar -->
-        <Navbar />
+      <div class="flex flex-col h-screen overflow-hidden">
+        <!-- Navbar - Fixed at top -->
+        <div class="flex-none">
+          <Navbar />
+        </div>
 
-        <!-- Breadcrumbs -->
-        <Breadcrumbs v-if="showBreadcrumbs" />
+        <!-- Scrollable content area -->
+        <div class="flex-1 overflow-y-auto">
+          <!-- Breadcrumbs -->
+          <Breadcrumbs v-if="showBreadcrumbs" />
 
-        <!-- Page content -->
-        <main class="flex-1 p-6">
-          <slot />
-        </main>
+          <!-- Page content -->
+          <main class="p-6">
+            <slot />
+          </main>
+        </div>
       </div>
     </Sidebar>
 
